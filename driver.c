@@ -382,15 +382,23 @@ static void cmd_log_finish(void)
   spdk_memzone_free(DRIVER_GLOBAL_CONFIG_NAME);
 }
 
+static struct cmd_log_entry_t* debug_log_entry = NULL;
 
 void cmdlog_cmd_cpl(struct nvme_request* req, struct spdk_nvme_cpl* cpl)
 {
+#if 0
   struct timeval diff;
   struct timeval now;
   struct cmd_log_entry_t* log_entry = req->cmdlog_entry;
 
   assert(cpl != NULL);
   assert(log_entry != NULL);
+
+  if (debug_log_entry)
+  {
+    SPDK_INFOLOG(SPDK_LOG_NVME, "overlapped entry %p, cpl entry %p, cpl req %p, this req %p \n",
+                 debug_log_entry, log_entry, log_entry->req, req);
+  }
 
   SPDK_DEBUGLOG(SPDK_LOG_NVME, "cmd completed, cid %d\n", log_entry->cpl.cid);
 
@@ -441,12 +449,14 @@ void cmdlog_cmd_cpl(struct nvme_request* req, struct spdk_nvme_cpl* cpl)
   SPDK_DEBUGLOG(SPDK_LOG_NVME, "recover req %p cb arg, entry %p, old %p, new %p\n",
                 log_entry->req, log_entry, log_entry->req->cb_arg, log_entry->cb_arg);
   log_entry->req = NULL;
+#endif
 }
 
 
 // for spdk internel ues: nvme_qpair_submit_request
 void cmdlog_add_cmd(struct spdk_nvme_qpair* qpair, struct nvme_request* req)
 {
+#if 0
   uint16_t qid = qpair->id;
   struct cmd_log_table_t* log_table = &cmd_log_queue_table[qid];
   uint32_t tail_index = log_table->tail_index;
@@ -462,10 +472,12 @@ void cmdlog_add_cmd(struct spdk_nvme_qpair* qpair, struct nvme_request* req)
   if (log_entry->req != NULL)
   {
     // this entry is overlapped before cmd complete
-    SPDK_NOTICELOG("uncompleted cmd in cmdlog: %p\n", log_entry);
+    SPDK_NOTICELOG("uncompleted cmd in cmdlog: %p, old req %p\n", log_entry, log_entry->req);
     nvme_qpair_print_command(qpair, &log_entry->cmd);
+    log_cmd_dump(qpair, 0);
+    debug_log_entry = log_entry;
   }
-
+  
   log_entry->buf = req->payload.contig_or_cb_arg;
   log_entry->cpl_latency_us = 0;
   memcpy(&log_entry->cmd, &req->cmd, sizeof(struct spdk_nvme_cmd));
@@ -484,6 +496,7 @@ void cmdlog_add_cmd(struct spdk_nvme_qpair* qpair, struct nvme_request* req)
     tail_index = 0;
   }
   log_table->tail_index = tail_index;
+#endif
 }
 
 
@@ -741,13 +754,13 @@ struct spdk_nvme_ctrlr* nvme_init(char * traddr)
   {
     return NULL;
   }
-
+#if 0
   if (spdk_process_is_primary())
   {
     // enable msix interrupt
     intc_init(ctrlr);
   }
-
+#endif
   SPDK_DEBUGLOG(SPDK_LOG_NVME, "found device: %s\n", ctrlr->trid.traddr);
   return ctrlr;
 }
@@ -796,6 +809,7 @@ int nvme_wait_completion_admin(struct spdk_nvme_ctrlr* ctrlr)
 {
   int32_t rc;
 
+#if 0  
   // check msix interrupt
   if (cmd_log_queue_table[0].msix_enabled)
   {
@@ -808,14 +822,17 @@ int nvme_wait_completion_admin(struct spdk_nvme_ctrlr* ctrlr)
 
   // mask the interrupt
   nvme_pcie_ctrlr_set_reg_4(ctrlr, cmd_log_queue_table[0].mask_offset, 1);
-
+#endif
+  
   // process all the completions
   rc = spdk_nvme_ctrlr_process_admin_completions(ctrlr);
 
+#if 0
   // clear and un-mask the interrupt
   cmd_log_queue_table[0].msix_data = 0;
   nvme_pcie_ctrlr_set_reg_4(ctrlr, cmd_log_queue_table[0].mask_offset, 0);
-
+#endif
+  
   return rc;
 }
 
@@ -1566,7 +1583,7 @@ void log_cmd_dump(struct spdk_nvme_qpair* qpair, size_t count)
       tv = table->table[index].time_cmd;
       time = localtime(&tv.tv_sec);
       strftime(tmbuf, sizeof(tmbuf), "%Y-%m-%d %H:%M:%S", time);
-      SPDK_NOTICELOG("index %d, %s.%06ld\n", index, tmbuf, tv.tv_usec);
+      SPDK_NOTICELOG("index %d, %s.%06ld, req %p\n", index, tmbuf, tv.tv_usec, &table->table[index].req);
       nvme_qpair_print_command(qpair, &table->table[index].cmd);
 
       //cpl part
