@@ -1960,9 +1960,12 @@ class _IOWorker(object):
         # queue for returning result
         self.q = _mp.Queue()
 
+        # lock for processes sync
+        self.l = _mp.Lock()
+
         # create the child process
         self.p = _mp.Process(target = self._ioworker,
-                             args = (self.q, pciaddr, nsid,
+                             args = (self.q, self.l, pciaddr, nsid,
                                      lba_start, lba_size, lba_align, lba_random,
                                      region_start, region_end, read_percentage,
                                      iops, io_count, time, qdepth, qprio,
@@ -2060,7 +2063,7 @@ class _IOWorker(object):
         self.close()
         return True
 
-    def _ioworker(self, rqueue, pciaddr, nsid, lba_start, lba_size,
+    def _ioworker(self, rqueue, locker, pciaddr, nsid, lba_start, lba_size,
                   lba_align, lba_random, region_start, region_end,
                   read_percentage, iops, io_count, time, qdepth, qprio,
                   output_io_per_second, output_percentile_latency):
@@ -2107,9 +2110,11 @@ class _IOWorker(object):
             args.qdepth = qdepth
 
             # runtime in subprocess
-            nvme0 = Controller(pciaddr)
-            nvme0n1 = Namespace(nvme0, nsid)
-            qpair = Qpair(nvme0, max(2, qdepth), qprio)
+            with locker:
+                nvme0 = Controller(pciaddr)
+                nvme0n1 = Namespace(nvme0, nsid)
+                qpair = Qpair(nvme0, max(2, qdepth), qprio)
+                logging.warning("created qpair id: %d" % qpair.sqid)
 
             # ioworker main roution
             error = d.ioworker_entry(nvme0n1._ns, qpair._qpair, &args, &rets)
@@ -2135,6 +2140,23 @@ class _IOWorker(object):
             if _timeout_happened:
                 error = -10
 
+            with locker:
+                # close resources in right order
+                nvme0n1.close()
+
+                # delete resources
+                if 'qpair' in locals():
+                    logging.warning("delete qpair id: %d" % qpair.sqid)
+                    del qpair
+                del nvme0n1
+                del nvme0
+
+            if args.io_counter_per_second:
+                PyMem_Free(args.io_counter_per_second)
+
+            if args.io_counter_per_latency:
+                PyMem_Free(args.io_counter_per_latency)
+
             # feed return to main process
             rqueue.put((os.getpid(),
                         error,
@@ -2142,20 +2164,7 @@ class _IOWorker(object):
                         output_io_per_second,
                         output_io_per_latency))
 
-            # close resources in right order
-            if 'nvme0n1' in locals():
-                nvme0n1.close()
-
-            # delete resources
-            if 'qpair' in locals():
-                del qpair
-                import gc; gc.collect()
-
-            if args.io_counter_per_second:
-                PyMem_Free(args.io_counter_per_second)
-
-            if args.io_counter_per_latency:
-                PyMem_Free(args.io_counter_per_latency)
+            import gc; gc.collect()
 
 
 def config(verify, fua_read=False, fua_write=False):
